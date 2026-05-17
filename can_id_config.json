@@ -1,0 +1,25 @@
+{
+  "can_ids": {
+    "amk_actual_lf": "0x283",
+    "amk_actual_rf": "0x284",
+    "amk_actual_rb": "0x287",
+    "amk_actual_lb": "0x288",
+    "amk_speed": "0x234",
+    "ebs_status": "0x002",
+    "ebs_oil": "0x402",
+    "ebs_air": "0x482",
+    "steer_encoder": "0x096",
+    "epos_status_position": "0x381",
+    "epos_control": "0x401",
+    "epos_sdo_response": "0x581",
+    "epos_sdo_request": "0x601",
+    "epos_heartbeat": "0x701",
+    "ivt_result_i": "0x521",
+    "ivt_result_u1": "0x522",
+    "ivt_power": "0x235",
+    "ecu_msg": "0x156",
+    "ecu_torque": "0x231",
+    "ecu_speed": "0x232",
+    "ecu_angle": "0x233"
+  }
+}
