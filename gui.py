@@ -16,6 +16,12 @@ except ImportError as exc:
 
 
 TAB_ORDER = ["安全回路", "电机控制器", "转向系统", "EBS", "能量计", "ECU"]
+SAFETY_LED_SOURCES = [
+    ("锁存器1", "ebs_status"),
+    ("锁存器2", "epos_heartbeat"),
+    ("锁存器3", "ecu_msg"),
+    ("锁存器4", "amk_actual_lf"),
+]
 
 # Toy-like VI palette based on the HRT 26D Smart Falcon mascot design.
 # The UI keeps the black base, adds more mascot-gray plastic panels, and uses
@@ -155,6 +161,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.last_rx: Dict[str, float] = {}
         self.latest_display: Dict[str, Dict[str, object]] = {}
         self.bindings: Dict[str, List[MessageRowBinding]] = {}
+        self.safety_leds: Dict[str, QtWidgets.QLabel] = {}
         self.data_tables: List[QtWidgets.QTableWidget] = []
 
         self.stats_start_time = time.monotonic()
@@ -244,14 +251,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
         for tab_name in TAB_ORDER:
             if tab_name == "安全回路":
-                page = QtWidgets.QWidget()
-                layout = QtWidgets.QVBoxLayout(page)
-                msg = QtWidgets.QLabel("安全回路没有相关信息。")
-                msg.setAlignment(QtCore.Qt.AlignCenter)
-                layout.addStretch(1)
-                layout.addWidget(msg)
-                layout.addStretch(1)
-                self.tabs.addTab(page, tab_name)
+                self._build_safety_tab()
                 continue
 
             tab_specs = specs_by_tab.get(tab_name, [])
@@ -333,6 +333,79 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
             self.tabs.addTab(page, tab_name)
             self.data_tables.append(table)
+
+    def _build_safety_tab(self) -> None:
+        page = QtWidgets.QWidget()
+        page.setObjectName("tablePage")
+        page.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setSpacing(0)
+
+        shell = QtWidgets.QFrame()
+        shell.setObjectName("tableShell")
+        shell.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        shell_layout = QtWidgets.QVBoxLayout(shell)
+        shell_layout.setContentsMargins(28, 20, 28, 20)
+        shell_layout.setSpacing(0)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+
+        left_group = QtWidgets.QVBoxLayout()
+        left_group.setSpacing(18)
+        left_group.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        right_group = QtWidgets.QVBoxLayout()
+        right_group.setSpacing(18)
+        right_group.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+        for idx, (display_name, message_key) in enumerate(SAFETY_LED_SOURCES):
+            led, holder = create_centered_led(44, VI_PANEL_2)
+            set_led(led, False)
+            holder.setFixedWidth(180)
+
+            item_layout = QtWidgets.QHBoxLayout()
+            item_layout.setContentsMargins(0, 0, 0, 0)
+            item_layout.setSpacing(10)
+            label = QtWidgets.QLabel(display_name)
+            label.setAlignment(QtCore.Qt.AlignVCenter)
+            label.setStyleSheet("background: transparent;")
+            item_layout.addWidget(led)
+            item_layout.addWidget(label)
+            item_layout.addStretch(1)
+
+            wrap = QtWidgets.QWidget()
+            wrap.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+            wrap.setStyleSheet("background: transparent; border: none;")
+            wrap.setLayout(item_layout)
+            if idx < 2:
+                left_group.addWidget(wrap, 0, QtCore.Qt.AlignLeft)
+            else:
+                right_group.addWidget(wrap, 0, QtCore.Qt.AlignRight)
+
+            self.safety_leds[message_key] = led
+
+        middle_placeholder = QtWidgets.QLabel("图片预留区域")
+        middle_placeholder.setAlignment(QtCore.Qt.AlignCenter)
+        middle_placeholder.setStyleSheet(
+            f"color: {VI_SILVER}; border: 2px dashed {VI_GRID}; border-radius: 14px; background: transparent;"
+        )
+        middle_placeholder.setMinimumSize(300, 220)
+
+        row.addLayout(left_group, 1)
+        row.addStretch(1)
+        row.addWidget(middle_placeholder, 0, QtCore.Qt.AlignCenter)
+        row.addStretch(1)
+        row.addLayout(right_group, 1)
+
+        shell_layout.addStretch(1)
+        shell_layout.addLayout(row)
+        shell_layout.addStretch(1)
+
+        layout.addWidget(shell)
+        self.tabs.addTab(page, "安全回路")
 
     def _build_stats_sidebar(self) -> QtWidgets.QFrame:
         panel = QtWidgets.QFrame()
@@ -520,6 +593,10 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
             ok = (now - self.last_rx.get(key, 0.0)) <= 2.0
             for bind in binds:
                 set_led(bind.led, ok)
+
+        for source_key, led in self.safety_leds.items():
+            ok = (now - self.last_rx.get(source_key, 0.0)) <= 2.0
+            set_led(led, ok)
 
         elapsed = max(now - self.stats_start_time, 1e-6)
         if self.receiving_active:
