@@ -58,12 +58,41 @@ def _decode_amk_speed(data8: bytes) -> Dict[str, object]:
     }
 
 
+def _decode_epos_raw(data8: bytes) -> Dict[str, object]:
+    return {"raw_data": data8.hex()}
+
+
 def _decode_ebs_status(data8: bytes) -> Dict[str, object]:
     return {
         "ebs_error": _get_bits_le(data8, 0, 1),
         "ebs_ready": _get_bits_le(data8, 4, 1),
         "ecu_disconnected": _get_bits_le(data8, 5, 1),
         "timeout": _get_bits_le(data8, 31, 1),
+    }
+
+
+def _decode_command(data8: bytes) -> Dict[str, object]:
+    return {
+        "workstation_status": data8[0],
+        "velocity_cmd_mps": _i16_le(data8, 1) * 0.001,
+        "angle_cmd": _i16_le(data8, 3) * 0.001,
+        "sensor_state": data8[7],
+    }
+
+
+def _decode_ins_output(data8: bytes) -> Dict[str, object]:
+    return {
+        "velocity_x_mps": _i16_le(data8, 0) * 0.001,
+        "velocity_y_mps": _i16_le(data8, 2) * 0.001,
+        "acceleration_x": _i16_le(data8, 4) * 0.001,
+        "acceleration_y": _i16_le(data8, 6) * 0.001,
+    }
+
+
+def _decode_ins_output2(data8: bytes) -> Dict[str, object]:
+    return {
+        "vehicle_speed_mps": _u16_le(data8, 0) * 0.001,
+        "yaw_rate_dps": _i16_le(data8, 2) / 150.0,
     }
 
 
@@ -103,10 +132,6 @@ def _decode_epos_control(data8: bytes) -> Dict[str, object]:
     }
 
 
-def _decode_epos_raw(data8: bytes) -> Dict[str, object]:
-    return {"raw_data": data8.hex()}
-
-
 def _decode_epos_heartbeat(data8: bytes) -> Dict[str, object]:
     return {"node_state": data8[0]}
 
@@ -125,22 +150,22 @@ def _decode_ivt_power(data8: bytes) -> Dict[str, object]:
 
 def _decode_ecu_msg(data8: bytes) -> Dict[str, object]:
     return {
-        "ecu_state": _get_bits_le(data8, 0, 3),
-        "ecu_asms": _get_bits_le(data8, 3, 1),
-        "ecu_manualstate": _get_bits_le(data8, 4, 4),
-        "ecu_match_mode1": data8[1],
-        "ecu_error": data8[2],
-        "ecu_match_mode2": _get_bits_le(data8, 24, 4),
-        "ecu_matchflag": _get_bits_le(data8, 28, 1),
-        "ecu_lb_state": _get_bits_le(data8, 32, 2),
-        "ecu_lf_state": _get_bits_le(data8, 34, 2),
-        "ecu_rb_state": _get_bits_le(data8, 36, 2),
-        "ecu_rf_state": _get_bits_le(data8, 38, 2),
-        "ecu_emergency": _get_bits_le(data8, 40, 4),
-        "ecu_lose_time": data8[6],
-        "ecu_enable": _get_bits_le(data8, 56, 1),
-        "ecu_hv": _get_bits_le(data8, 57, 1),
-        "res_go_signal": _get_bits_le(data8, 60, 1),
+        "statu_flag": _get_bits_le(data8, 0, 3),
+        "asms": _get_bits_le(data8, 3, 1),
+        "man_state": _get_bits_le(data8, 4, 4),
+        "match_mode_byte1": data8[1],
+        "lose_flag_set": data8[2],
+        "match_mode_low4": _get_bits_le(data8, 24, 4),
+        "key2_flag": _get_bits_le(data8, 28, 1),
+        "lb_state": _get_bits_le(data8, 32, 2),
+        "lf_state": _get_bits_le(data8, 34, 2),
+        "rb_state": _get_bits_le(data8, 36, 2),
+        "rf_state": _get_bits_le(data8, 38, 2),
+        "emergency_flag": _get_bits_le(data8, 40, 4),
+        "lose_time": data8[6],
+        "res_go": _get_bits_le(data8, 56, 1),
+        "sc_out": _get_bits_le(data8, 57, 1),
+        "motor_en_state": _get_bits_le(data8, 60, 1),
     }
 
 
@@ -172,15 +197,20 @@ def _decode_ecu_angle(data8: bytes) -> Dict[str, object]:
 
 
 MESSAGE_SPECS: List[Dict[str, object]] = [
+    {"key": "epos_pdo_start", "name": "EPOS4_PDO_Start", "tab": "转向系统", "decoder": _decode_epos_raw},
     {"key": "amk_actual_lf", "name": "AMK_ActualValue1_LF", "tab": "电机控制器", "decoder": _decode_amk_actual},
     {"key": "amk_actual_rf", "name": "AMK_ActualValue1_RF", "tab": "电机控制器", "decoder": _decode_amk_actual},
     {"key": "amk_actual_rb", "name": "AMK_ActualValue1_RB", "tab": "电机控制器", "decoder": _decode_amk_actual},
     {"key": "amk_actual_lb", "name": "AMK_ActualValue1_LB", "tab": "电机控制器", "decoder": _decode_amk_actual},
     {"key": "amk_speed", "name": "AMK_speed", "tab": "电机控制器", "decoder": _decode_amk_speed},
     {"key": "ebs_status", "name": "EBS_Status", "tab": "EBS", "decoder": _decode_ebs_status},
+    {"key": "command", "name": "command", "tab": "ECU", "decoder": _decode_command},
+    {"key": "ins_output", "name": "INSOutput", "tab": "ECU", "decoder": _decode_ins_output},
+    {"key": "ins_output2", "name": "INSOutput2", "tab": "ECU", "decoder": _decode_ins_output2},
     {"key": "ebs_oil", "name": "EBS_OIL", "tab": "EBS", "decoder": _decode_ebs_oil},
     {"key": "ebs_air", "name": "EBS_AIR", "tab": "EBS", "decoder": _decode_ebs_air},
     {"key": "steer_encoder", "name": "SteerEncoder", "tab": "转向系统", "decoder": _decode_steer_encoder},
+    {"key": "epos_mode_or_stop", "name": "EPOS4_Mode_or_Stop", "tab": "转向系统", "decoder": _decode_epos_raw},
     {"key": "epos_status_position", "name": "EPOS4_Status_Position", "tab": "转向系统", "decoder": _decode_epos_status_position},
     {"key": "epos_control", "name": "enable401", "tab": "转向系统", "decoder": _decode_epos_control},
     {"key": "epos_sdo_response", "name": "EPOS4_SDO_Response", "tab": "转向系统", "decoder": _decode_epos_raw},

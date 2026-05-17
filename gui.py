@@ -217,9 +217,23 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self._build_tabs()
         self.stats_panel = self._build_stats_sidebar()
 
+        # The tab widget includes the bottom tab bar in its total height, while the
+        # visible table frame sits inside the tab page. Put the right sidebar in a
+        # wrapper with matching top/bottom margins so its border aligns with the
+        # table frame instead of the whole tab widget.
+        self.stats_panel_wrapper = QtWidgets.QWidget()
+        self.stats_panel_wrapper.setObjectName("statsPanelWrapper")
+        self.stats_panel_wrapper.setFixedWidth(450)
+        stats_wrapper_layout = QtWidgets.QVBoxLayout(self.stats_panel_wrapper)
+        stats_wrapper_layout.setContentsMargins(0, 8, 0, 64)
+        stats_wrapper_layout.setSpacing(0)
+        stats_wrapper_layout.addWidget(self.stats_panel, 1)
+
         content_row = QtWidgets.QHBoxLayout()
+        content_row.setContentsMargins(0, 0, 0, 0)
+        content_row.setSpacing(10)
         content_row.addWidget(self.tabs, 1)
-        content_row.addWidget(self.stats_panel)
+        content_row.addWidget(self.stats_panel_wrapper)
         self.root_layout.addLayout(content_row, 1)
 
     def _build_tabs(self) -> None:
@@ -324,6 +338,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         panel = QtWidgets.QFrame()
         panel.setObjectName("statsPanel")
         panel.setFixedWidth(450)
+        panel.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 6)
         layout.setSpacing(10)

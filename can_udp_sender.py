@@ -69,6 +69,36 @@ def _pack_ebs_status() -> bytes:
     return struct.pack("<I", flags) + b"\x00\x00\x00\x00"
 
 
+def _pack_command() -> bytes:
+    workstation_status = random.randint(0, 7)
+    velocity_cmd = random.randint(-32767, 32767)
+    angle_cmd = random.randint(-32767, 32767)
+    sensor_state = random.randint(0, 8)
+    payload = bytearray(8)
+    payload[0] = workstation_status
+    payload[1:3] = struct.pack("<h", velocity_cmd)
+    payload[3:5] = struct.pack("<h", angle_cmd)
+    payload[7] = sensor_state
+    return bytes(payload)
+
+
+def _pack_ins_output() -> bytes:
+    return struct.pack(
+        "<hhhh",
+        random.randint(-32000, 32000),
+        random.randint(-32000, 32000),
+        random.randint(-32000, 32000),
+        random.randint(-32000, 32000),
+    )
+
+
+def _pack_ins_output2() -> bytes:
+    payload = bytearray(8)
+    payload[0:2] = struct.pack("<H", random.randint(0, 65535))
+    payload[2:4] = struct.pack("<h", random.randint(-30000, 30000))
+    return bytes(payload)
+
+
 def _pack_steer_encoder() -> bytes:
     payload = bytearray(8)
     raw_angle = random.randint(0, 65535)
@@ -91,6 +121,16 @@ def _pack_epos_control() -> bytes:
 
 def _pack_epos_raw() -> bytes:
     return bytes(random.randint(0, 255) for _ in range(8))
+
+
+def _pack_epos_pdo_start() -> bytes:
+    return b"\x01\x00\x00\x00\x00\x00\x00\x00"
+
+
+def _pack_epos_mode_or_stop() -> bytes:
+    if random.random() < 0.2:
+        return b"\x00\x00\x00\x00\x00\x00\x00\x00"
+    return b"\x01\x00\x00\x00\x00\x00\x00\x00"
 
 
 def _pack_epos_heartbeat() -> bytes:
@@ -146,15 +186,20 @@ def _frame(key: str, data: bytes, dlc: int = 8) -> CanFrame:
 
 def build_random_frames() -> List[CanFrame]:
     return [
+        _frame("epos_pdo_start", _pack_epos_pdo_start()),
         _frame("amk_actual_lf", _pack_amk_actual_safe()),
         _frame("amk_actual_rf", _pack_amk_actual_safe()),
         _frame("amk_actual_rb", _pack_amk_actual_safe()),
         _frame("amk_actual_lb", _pack_amk_actual_safe()),
         _frame("amk_speed", _pack_amk_speed_like()),
         _frame("ebs_status", _pack_ebs_status()),
+        _frame("command", _pack_command()),
+        _frame("ins_output", _pack_ins_output()),
+        _frame("ins_output2", _pack_ins_output2()),
         _frame("ebs_oil", _pack_u16x4(random.randint(0, 8000), random.randint(0, 8000), random.randint(0, 8000), random.randint(0, 8000))),
         _frame("ebs_air", struct.pack("<HHH", random.randint(0, 8000), random.randint(0, 8000), random.randint(1200, 2800)) + b"\x00\x00"),
         _frame("steer_encoder", _pack_steer_encoder()),
+        _frame("epos_mode_or_stop", _pack_epos_mode_or_stop()),
         _frame("epos_status_position", _pack_epos_status_position()),
         _frame("epos_control", _pack_epos_control()),
         _frame("epos_sdo_response", _pack_epos_raw()),
