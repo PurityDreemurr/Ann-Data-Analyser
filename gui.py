@@ -47,6 +47,31 @@ VI_GRAY = "#5A5A5A"
 VI_DARK_TEXT = "#111515"
 
 
+def pick_first_available_font(candidates: List[str]) -> str:
+    families = set(QtGui.QFontDatabase().families())
+    for name in candidates:
+        if name in families:
+            return name
+    return QtWidgets.QApplication.font().family()
+
+
+def resolve_ui_fonts() -> Tuple[str, str]:
+    if sys.platform == "darwin":
+        english_candidates = ["Comic Sans MS", "Comic Sans", "Chalkboard SE", "Arial Rounded MT Bold", "Arial"]
+        chinese_candidates = ["PingFang SC", "Hiragino Sans GB", "STHeiti", "Heiti SC", "Arial Unicode MS"]
+    elif sys.platform.startswith("win"):
+        english_candidates = ["Comic Sans MS", "Comic Sans", "Arial Rounded MT Bold", "Arial"]
+        chinese_candidates = ["YouYuan", "幼圆", "Microsoft YaHei", "SimHei"]
+    else:
+        english_candidates = ["Comic Sans MS", "Comic Sans", "Arial Rounded MT Bold", "Arial"]
+        chinese_candidates = ["Noto Sans CJK SC", "WenQuanYi Zen Hei", "Microsoft YaHei", "SimHei"]
+
+    return (
+        pick_first_available_font(english_candidates),
+        pick_first_available_font(chinese_candidates),
+    )
+
+
 @dataclass
 class MessageRowBinding:
     raw_item: QtWidgets.QTableWidgetItem
@@ -152,8 +177,15 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         icon_path = Path(__file__).resolve().parent / "icon" / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QtGui.QIcon(str(icon_path)))
-        self.setMinimumSize(1920, 1200)
-        self.resize(1920, 1200)
+        self.setMinimumSize(960, 640)
+        screen = QtWidgets.QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            width = min(area.width(), max(1100, int(area.width() * 0.88)))
+            height = min(area.height(), max(760, int(area.height() * 0.88)))
+            self.resize(width, height)
+        else:
+            self.resize(1280, 800)
 
         self.settings = QtCore.QSettings("AnnDataAnalyser", "CanUdpGui")
         self.receiver = None
@@ -624,7 +656,9 @@ def main() -> None:
     args = parser.parse_args()
 
     app = QtWidgets.QApplication(sys.argv)
-    app.setFont(QtGui.QFont("Comic Sans MS", 15, QtGui.QFont.Bold))
+    english_font, chinese_font = resolve_ui_fonts()
+    font_stack = f'"{english_font}", "{chinese_font}", "sans-serif"'
+    app.setFont(QtGui.QFont(english_font, 13, QtGui.QFont.Bold))
     icon_path = Path(__file__).resolve().parent / "icon" / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
@@ -639,7 +673,7 @@ def main() -> None:
         QWidget {{
             background-color: {VI_BLACK};
             color: {VI_SOFT_WHITE};
-            font-family: "Comic Sans MS", "YouYuan", "幼圆";
+            font-family: {font_stack};
             font-size: 20px;
             font-weight: 900;
         }}
@@ -708,7 +742,7 @@ def main() -> None:
             background: transparent;
             border: none;
             color: {VI_SOFT_WHITE};
-            font-family: "Comic Sans MS", "YouYuan", "幼圆";
+            font-family: {font_stack};
             font-size: 34px;
             font-weight: 900;
             padding: 0px;
