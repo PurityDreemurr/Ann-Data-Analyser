@@ -4,7 +4,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from can_id_config import get_can_id
 from can_udp_parser import MESSAGE_SPECS, parse_packet
@@ -198,6 +198,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.bindings: Dict[str, List[MessageRowBinding]] = {}
         self.safety_leds: Dict[str, QtWidgets.QLabel] = {}
         self.data_tables: List[QtWidgets.QTableWidget] = []
+        self.logo_pixmap_original: Optional[QtGui.QPixmap] = None
 
         self.stats_start_time = time.monotonic()
         self.total_udp_packets = 0
@@ -485,19 +486,14 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         logo_path = Path(__file__).resolve().parent / "icon" / "logo.png"
         self.mascot_logo = QtWidgets.QLabel()
         self.mascot_logo.setObjectName("mascotLogo")
-        self.mascot_logo.setFixedSize(self._sp(250), self._sp(250))
+        self.mascot_logo.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        self.mascot_logo.setMinimumSize(self._sp(90), self._sp(90))
         self.mascot_logo.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom)
         if logo_path.exists():
             logo_pixmap = QtGui.QPixmap(str(logo_path))
             if not logo_pixmap.isNull():
-                self.mascot_logo.setPixmap(
-                    logo_pixmap.scaled(
-                        238,
-                        238,
-                        QtCore.Qt.KeepAspectRatio,
-                        QtCore.Qt.SmoothTransformation,
-                    )
-                )
+                self.logo_pixmap_original = logo_pixmap
+                self._update_mascot_logo_pixmap()
             else:
                 self.mascot_logo.setText("LOGO")
         else:
@@ -507,12 +503,34 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.mascot_title = QtWidgets.QLabel("Ann Data Analyser")
         self.mascot_title.setObjectName("mascotTitle")
         self.mascot_title.setAlignment(QtCore.Qt.AlignCenter)
-        self.mascot_title.setFixedWidth(self._sp(430))
-        self.mascot_title.setFixedHeight(self._sp(44))
+        self.mascot_title.setMinimumHeight(self._sp(36))
         layout.addSpacing(0)
         layout.addWidget(self.mascot_title, 0, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom)
 
         return panel
+
+    def _update_mascot_logo_pixmap(self) -> None:
+        if self.logo_pixmap_original is None:
+            return
+        panel_w = self.stats_panel.width() if hasattr(self, "stats_panel") else self.width()
+        panel_h = self.stats_panel.height() if hasattr(self, "stats_panel") else self.height()
+        target = min(
+            int(panel_w * 0.56),
+            int(panel_h * 0.24),
+            self._sp(320),
+        )
+        target = max(target, self._sp(90))
+        self.mascot_logo.setFixedSize(target, target)
+
+        available_w = max(target - self._sp(12), self._sp(80))
+        available_h = max(target - self._sp(12), self._sp(80))
+        scaled = self.logo_pixmap_original.scaled(
+            available_w,
+            available_h,
+            QtCore.Qt.KeepAspectRatio,
+            QtCore.Qt.SmoothTransformation,
+        )
+        self.mascot_logo.setPixmap(scaled)
 
     def _load_last_connection(self, default_ip: str, default_port: int) -> None:
         saved_ip = self.settings.value("udp/ip", default_ip, type=str)
@@ -653,6 +671,10 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self._save_last_connection()
         self._stop_receiver()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):  # type: ignore[override]
+        super().resizeEvent(event)
+        QtCore.QTimer.singleShot(0, self._update_mascot_logo_pixmap)
 
 
 def main() -> None:
