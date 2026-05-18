@@ -4,6 +4,7 @@ import sys
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -16,8 +17,9 @@ except ImportError as exc:
     raise SystemExit("PyQt5 is required. Install with: pip install PyQt5") from exc
 
 
-TAB_ORDER = ["安全回路", "电机控制器", "转向系统", "EBS", "能量计", "ECU"]
+TAB_ORDER = ["安全回路", "电机控制器", "转向系统", "EBS", "能量计", "ECU", "日志"]
 RATE_WINDOW_S = 2.0
+AUTO_SAVE_FRAME_BATCH = 20000
 SAFETY_LED_SOURCES = [
     ("锁存器1", "ebs_status"),
     ("锁存器2", "epos_heartbeat"),
@@ -83,6 +85,15 @@ class MessageRowBinding:
     parsed_layout: QtWidgets.QGridLayout
     led: QtWidgets.QLabel
     row_color: str
+
+
+@dataclass
+class CanLogEntry:
+    timestamp_s: float
+    channel: int
+    can_id: int
+    dlc: int
+    data: bytes
 
 
 def set_led(led: QtWidgets.QLabel, ok: bool) -> None:
@@ -268,6 +279,12 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.udp_packet_times = deque()
         self.can_frame_events = deque()
         self.receiving_active = False
+        self.log_buffer_entries: List[CanLogEntry] = []
+        self.log_auto_saved_files: List[Path] = []
+        self.log_total_frames = 0
+        self.log_base_timestamp: Optional[float] = None
+        self.log_session_prefix = datetime.now().strftime("%Y%m%d_%H%M%S_can_log")
+        self.user_log_save_path: Optional[str] = None
 
         self.root = QtWidgets.QWidget()
         self.root.setObjectName("appRoot")
@@ -355,6 +372,9 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         for tab_name in TAB_ORDER:
             if tab_name == "安全回路":
                 self._build_safety_tab()
+                continue
+            if tab_name == "日志":
+                self._build_log_tab()
                 continue
 
             tab_specs = specs_by_tab.get(tab_name, [])
@@ -447,6 +467,183 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
             self.tabs.addTab(page, tab_name)
             self.data_tables.append(table)
+
+    def _build_log_tab(self) -> None:
+        page = QtWidgets.QWidget()
+        page.setObjectName("tablePage")
+        page.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        layout = QtWidgets.QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 4)
+        layout.setSpacing(0)
+
+        shell = QtWidgets.QFrame()
+        shell.setObjectName("tableShell")
+        shell.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        shell_layout = QtWidgets.QVBoxLayout(shell)
+        shell_layout.setContentsMargins(18, 18, 18, 18)
+        shell_layout.setSpacing(14)
+
+        self.log_count_label = QtWidgets.QLabel("已记录 CAN 帧数: 0")
+        self.log_count_label.setStyleSheet(f"color: {VI_SOFT_WHITE}; background: transparent;")
+
+        self.log_save_button = QtWidgets.QPushButton("保存日志")
+        self.log_save_button.setObjectName("logSaveButton")
+        self.log_save_button.clicked.connect(self._on_save_log_clicked)
+
+        info_label = QtWidgets.QLabel("日志格式：ASC（Vector CAN log）")
+        info_label.setStyleSheet(f"color: {VI_SILVER}; background: transparent;")
+
+        shell_layout.addWidget(self.log_count_label, 0, QtCore.Qt.AlignLeft)
+        shell_layout.addWidget(info_label, 0, QtCore.Qt.AlignLeft)
+        shell_layout.addStretch(1)
+        shell_layout.addWidget(self.log_save_button, 0, QtCore.Qt.AlignRight)
+
+        layout.addWidget(shell)
+        self.tabs.addTab(page, "日志")
+
+    def _asc_header_lines(self) -> List[str]:
+        return [
+            f"date {datetime.now().strftime('%a %b %d %I:%M:%S.%f %p %Y')}",
+            "base hex  timestamps absolute",
+            "no internal events logged",
+            "Begin Triggerblock",
+        ]
+
+    def _entry_to_asc_line(self, entry: CanLogEntry) -> str:
+        if self.log_base_timestamp is None:
+            self.log_base_timestamp = entry.timestamp_s
+        rel = max(entry.timestamp_s - self.log_base_timestamp, 0.0)
+        channel = entry.channel + 1
+        id_token = f"{entry.can_id:X}{'x' if entry.can_id > 0x7FF else ''}"
+        data_tokens = [f"{b:02X}" for b in entry.data[: entry.dlc]]
+        data_part = " ".join(data_tokens)
+        line = f" {rel:12.6f} {channel} {id_token} Rx d {entry.dlc}"
+        if data_part:
+            line += f" {data_part}"
+        return line
+
+    def _write_asc_file(self, save_path: Path, data_lines: List[str]) -> None:
+        lines = self._asc_header_lines()
+        lines.extend(data_lines)
+        lines.append("End Triggerblock")
+        save_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _extract_data_lines_from_asc(self, file_path: Path) -> List[str]:
+        if not file_path.exists():
+            return []
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+        in_block = False
+        data_lines: List[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped == "Begin Triggerblock":
+                in_block = True
+                continue
+            if stripped == "End Triggerblock":
+                in_block = False
+                break
+            if in_block:
+                data_lines.append(line)
+        return data_lines
+
+    def _collect_all_data_lines(self) -> List[str]:
+        lines: List[str] = []
+        for file_path in self.log_auto_saved_files:
+            lines.extend(self._extract_data_lines_from_asc(file_path))
+        lines.extend(self._entry_to_asc_line(entry) for entry in self.log_buffer_entries)
+        return lines
+
+    def _flush_auto_save_if_needed(self, force: bool = False) -> None:
+        if not self.log_buffer_entries:
+            return
+        if not force and len(self.log_buffer_entries) < AUTO_SAVE_FRAME_BATCH:
+            return
+
+        chunk_index = len(self.log_auto_saved_files) + 1
+        auto_name = f"{self.log_session_prefix}_auto_{chunk_index:04d}.asc"
+        auto_path = (Path.cwd() / auto_name).resolve()
+        data_lines = [self._entry_to_asc_line(entry) for entry in self.log_buffer_entries]
+        try:
+            self._write_asc_file(auto_path, data_lines)
+            self.log_auto_saved_files.append(auto_path)
+            self.log_buffer_entries.clear()
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "自动保存失败", f"自动保存日志失败：\n{exc}")
+
+    def _save_logs_to_path(self, path: str, set_as_user_path: bool = False, show_success: bool = True) -> bool:
+        save_path = path.strip()
+        if not save_path:
+            return False
+        if not save_path.lower().endswith(".asc"):
+            save_path += ".asc"
+
+        target = Path(save_path).resolve()
+        try:
+            data_lines = self._collect_all_data_lines()
+            self._write_asc_file(target, data_lines)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(self, "保存失败", f"保存日志失败：\n{exc}")
+            return False
+
+        if set_as_user_path:
+            self.user_log_save_path = str(target)
+        if show_success:
+            QtWidgets.QMessageBox.information(self, "保存成功", f"日志已保存到：\n{target}")
+        return True
+
+    def _save_logs_with_dialog(self) -> bool:
+        default_name = datetime.now().strftime("%Y%m%d_%H%M%S_can_log.asc")
+        default_path = str((Path.cwd() / default_name).resolve())
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "保存 CAN 日志",
+            default_path,
+            "ASC Log (*.asc);;All Files (*)",
+        )
+        if not file_path:
+            return False
+
+        return self._save_logs_to_path(file_path, set_as_user_path=True, show_success=True)
+
+    @QtCore.pyqtSlot()
+    def _on_save_log_clicked(self) -> None:
+        self._save_logs_with_dialog()
+
+    def _delete_auto_saved_files(self) -> None:
+        for file_path in self.log_auto_saved_files:
+            try:
+                if file_path.exists():
+                    file_path.unlink()
+            except OSError:
+                pass
+        self.log_auto_saved_files.clear()
+
+    def _handle_exit_log_prompt(self) -> bool:
+        if self.user_log_save_path:
+            return self._save_logs_to_path(self.user_log_save_path, set_as_user_path=False, show_success=False)
+
+        msg_box = QtWidgets.QMessageBox(self)
+        msg_box.setIcon(QtWidgets.QMessageBox.Question)
+        msg_box.setWindowTitle("保存日志")
+        msg_box.setText("是否使用默认名称保存日志？")
+        yes_btn = msg_box.addButton("是", QtWidgets.QMessageBox.YesRole)
+        no_btn = msg_box.addButton("否", QtWidgets.QMessageBox.NoRole)
+        skip_btn = msg_box.addButton("不保存", QtWidgets.QMessageBox.RejectRole)
+        msg_box.exec_()
+
+        clicked = msg_box.clickedButton()
+        if clicked == yes_btn:
+            default_name = datetime.now().strftime("%Y%m%d_%H%M%S_can_log.asc")
+            default_path = str((Path.cwd() / default_name).resolve())
+            return self._save_logs_to_path(default_path, set_as_user_path=True, show_success=True)
+        if clicked == no_btn:
+            return self._save_logs_with_dialog()
+        if clicked == skip_btn:
+            self._delete_auto_saved_files()
+            self.log_buffer_entries.clear()
+            self.user_log_save_path = None
+            return True
+        return False
 
     def _build_safety_tab(self) -> None:
         page = QtWidgets.QWidget()
@@ -624,6 +821,12 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.total_can_frames = 0
         self.udp_packet_times.clear()
         self.can_frame_events.clear()
+        self._delete_auto_saved_files()
+        self.log_buffer_entries.clear()
+        self.log_total_frames = 0
+        self.log_base_timestamp = None
+        self.log_session_prefix = datetime.now().strftime("%Y%m%d_%H%M%S_can_log")
+        self.user_log_save_path = None
         self.stats_last_packet_label.setText("最近接收时间: -")
 
     def _stop_receiver(self) -> None:
@@ -686,7 +889,41 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
             f"最近接收时间: {time.strftime('%H:%M:%S', time.localtime())}"
         )
 
+        channel = int(packet.get("channel", 0))
+        packet_timestamp_us = packet.get("timestamp_us")
+        if isinstance(packet_timestamp_us, int):
+            frame_ts = packet_timestamp_us / 1_000_000.0
+        else:
+            frame_ts = time.time()
+
         for frame in frames:
+            can_id_value = 0
+            can_id_field = frame.get("can_id")
+            if isinstance(can_id_field, str):
+                try:
+                    can_id_value = int(can_id_field, 16)
+                except ValueError:
+                    can_id_value = 0
+
+            dlc = int(frame.get("dlc", 0))
+            data_hex = str(frame.get("data_hex", ""))
+            try:
+                data_bytes = bytes.fromhex(data_hex)
+            except ValueError:
+                data_bytes = b""
+
+            self.log_buffer_entries.append(
+                CanLogEntry(
+                    timestamp_s=frame_ts,
+                    channel=channel,
+                    can_id=can_id_value,
+                    dlc=max(0, min(8, dlc)),
+                    data=data_bytes,
+                )
+            )
+            self.log_total_frames += 1
+            self._flush_auto_save_if_needed(force=False)
+
             message_key = frame.get("message_key")
             if not message_key or message_key not in self.bindings:
                 continue
@@ -751,8 +988,13 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.stats_total_can_label.setText(f"CAN报文总数: {self.total_can_frames}")
         self.stats_total_udp_label.setText(f"UDP报文总数: {self.total_udp_packets}")
         self.stats_uptime_label.setText(f"运行时长: {elapsed:.1f} s")
+        if hasattr(self, "log_count_label"):
+            self.log_count_label.setText(f"已记录 CAN 帧数: {self.log_total_frames}")
 
     def closeEvent(self, event):  # type: ignore[override]
+        if not self._handle_exit_log_prompt():
+            event.ignore()
+            return
         self._save_last_connection()
         self._stop_receiver()
         super().closeEvent(event)
@@ -887,6 +1129,11 @@ def main() -> None:
             color: {VI_SOFT_WHITE};
             border: 4px solid {VI_SOFT_WHITE};
         }}
+        QPushButton#logSaveButton {{
+            background-color: {VI_TEAL};
+            color: {VI_DARK_TEXT};
+            border: 4px solid {VI_SOFT_WHITE};
+        }}
         QPushButton:hover {{
             background-color: {VI_TEAL};
             color: {VI_DARK_TEXT};
@@ -898,6 +1145,16 @@ def main() -> None:
             border-color: {VI_LIGHT};
         }}
         QPushButton:pressed, QPushButton#connectButton:pressed {{
+            background-color: {VI_RED};
+            color: {VI_SOFT_WHITE};
+            border-color: {VI_ORANGE};
+        }}
+        QPushButton#logSaveButton:hover {{
+            background-color: {VI_TEAL_BRIGHT};
+            color: {VI_DARK_TEXT};
+            border-color: {VI_LIGHT};
+        }}
+        QPushButton#logSaveButton:pressed {{
             background-color: {VI_RED};
             color: {VI_SOFT_WHITE};
             border-color: {VI_ORANGE};
@@ -1078,6 +1335,7 @@ def main() -> None:
         QLabel#mascotTitle { font-size: 24px; }
         QLineEdit#connectionInput, QLineEdit { font-size: 16px; border-radius: 20px; padding: 0px 12px; }
         QPushButton { font-size: 16px; border-radius: 20px; padding: 0px 14px; }
+        QPushButton#logSaveButton { font-size: 16px; border-radius: 20px; padding: 0px 14px; }
         QTabBar::tab { font-size: 16px; border-radius: 18px; padding: 6px 14px; }
         QTableWidget#dataTable { font-size: 16px; }
         QTableWidget#dataTable::item { font-size: 16px; padding: 6px 8px; }
