@@ -2,6 +2,7 @@ import argparse
 import socket
 import sys
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -16,6 +17,7 @@ except ImportError as exc:
 
 
 TAB_ORDER = ["安全回路", "电机控制器", "转向系统", "EBS", "能量计", "ECU"]
+RATE_WINDOW_S = 2.0
 SAFETY_LED_SOURCES = [
     ("锁存器1", "ebs_status"),
     ("锁存器2", "epos_heartbeat"),
@@ -74,9 +76,13 @@ def resolve_ui_fonts() -> Tuple[str, str]:
 
 @dataclass
 class MessageRowBinding:
+    table: QtWidgets.QTableWidget
+    row_index: int
     raw_item: QtWidgets.QTableWidgetItem
-    parsed_item: QtWidgets.QTableWidgetItem
+    parsed_widget: QtWidgets.QWidget
+    parsed_layout: QtWidgets.QGridLayout
     led: QtWidgets.QLabel
+    row_color: str
 
 
 def set_led(led: QtWidgets.QLabel, ok: bool) -> None:
@@ -128,7 +134,63 @@ def format_decoded_text(decoded: Dict[str, object]) -> str:
     """Format decoded CAN signals as plain table text, one signal per line."""
     if not decoded:
         return "-"
-    return "\n".join(f"{key}: {_format_value(value)}" for key, value in decoded.items())
+    key_width = max(len(str(key)) for key in decoded.keys())
+    lines = []
+    for key, value in decoded.items():
+        key_text = str(key).ljust(key_width)
+        value_text = _format_value(value)
+        lines.append(f"{key_text} : {value_text}")
+    return "\n".join(lines)
+
+
+def _clear_layout(layout: QtWidgets.QLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        child_widget = item.widget()
+        child_layout = item.layout()
+        if child_widget is not None:
+            child_widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def _update_parsed_grid(
+    parsed_widget: QtWidgets.QWidget,
+    parsed_layout: QtWidgets.QGridLayout,
+    decoded: Dict[str, object],
+    row_color: str,
+) -> None:
+    _clear_layout(parsed_layout)
+    parsed_widget.setStyleSheet(f"background-color: {row_color}; border: none;")
+
+    if not decoded:
+        key_label = QtWidgets.QLabel("-")
+        key_label.setStyleSheet(f"color: {VI_SILVER}; background-color: {row_color};")
+        parsed_layout.addWidget(key_label, 0, 0, 1, 2)
+        row_count = 1
+    else:
+        for idx, (key, value) in enumerate(decoded.items()):
+            key_label = QtWidgets.QLabel(str(key))
+            value_label = QtWidgets.QLabel(_format_value(value))
+            key_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+            value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            key_label.setStyleSheet(f"color: {VI_SOFT_WHITE}; background-color: {row_color};")
+            value_label.setStyleSheet(f"color: {VI_TEAL_BRIGHT}; background-color: {row_color};")
+            parsed_layout.addWidget(key_label, idx, 0)
+            parsed_layout.addWidget(value_label, idx, 1)
+        row_count = len(decoded)
+
+    metrics_h = max(parsed_widget.fontMetrics().height(), 18)
+    margins = parsed_layout.contentsMargins()
+    spacing = parsed_layout.verticalSpacing()
+    min_height = (
+        margins.top()
+        + margins.bottom()
+        + row_count * metrics_h
+        + max(row_count - 1, 0) * max(spacing, 0)
+        + 4
+    )
+    parsed_widget.setMinimumHeight(min_height)
 
 
 class UdpReceiverThread(QtCore.QThread):
@@ -203,6 +265,8 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.stats_start_time = time.monotonic()
         self.total_udp_packets = 0
         self.total_can_frames = 0
+        self.udp_packet_times = deque()
+        self.can_frame_events = deque()
         self.receiving_active = False
 
         self.root = QtWidgets.QWidget()
@@ -220,7 +284,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.status.showMessage("未连接")
 
         self.ui_timer = QtCore.QTimer(self)
-        self.ui_timer.setInterval(500)
+        self.ui_timer.setInterval(33)
         self.ui_timer.timeout.connect(self.refresh_ui)
         self.ui_timer.start()
 
@@ -324,18 +388,25 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
                 name_item = QtWidgets.QTableWidgetItem(str(spec["name"]))
                 id_item = QtWidgets.QTableWidgetItem(hex(can_id))
                 raw_item = QtWidgets.QTableWidgetItem("-")
-                parsed_item = QtWidgets.QTableWidgetItem("-")
-                parsed_item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
                 row_color = VI_PANEL_2 if row % 2 == 0 else VI_PANEL_3
                 row_background = QtGui.QBrush(QtGui.QColor(row_color))
-                for item in (id_item, name_item, raw_item, parsed_item):
+                for item in (id_item, name_item, raw_item):
                     item.setBackground(row_background)
                     item.setTextAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
                 id_item.setForeground(QtGui.QBrush(QtGui.QColor(VI_TEAL_BRIGHT)))
                 name_item.setForeground(QtGui.QBrush(QtGui.QColor(VI_ORANGE)))
                 raw_item.setForeground(QtGui.QBrush(QtGui.QColor(VI_SILVER)))
-                parsed_item.setForeground(QtGui.QBrush(QtGui.QColor(VI_SOFT_WHITE)))
+
+                parsed_widget = QtWidgets.QWidget()
+                parsed_widget.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+                parsed_layout = QtWidgets.QGridLayout(parsed_widget)
+                parsed_layout.setContentsMargins(6, 4, 6, 4)
+                parsed_layout.setHorizontalSpacing(10)
+                parsed_layout.setVerticalSpacing(2)
+                parsed_layout.setColumnStretch(0, 1)
+                parsed_layout.setColumnStretch(1, 1)
+                _update_parsed_grid(parsed_widget, parsed_layout, {}, row_color)
 
                 led, led_holder = create_centered_led(28, row_color)
                 set_led(led, False)
@@ -343,14 +414,18 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
                 table.setItem(row, 0, id_item)
                 table.setItem(row, 1, name_item)
                 table.setItem(row, 2, raw_item)
-                table.setItem(row, 3, parsed_item)
+                table.setCellWidget(row, 3, parsed_widget)
                 table.setCellWidget(row, 4, led_holder)
 
                 self.bindings.setdefault(message_key, []).append(
                     MessageRowBinding(
+                        table=table,
+                        row_index=row,
                         raw_item=raw_item,
-                        parsed_item=parsed_item,
+                        parsed_widget=parsed_widget,
+                        parsed_layout=parsed_layout,
                         led=led,
+                        row_color=row_color,
                     )
                 )
 
@@ -547,6 +622,8 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.stats_start_time = time.monotonic()
         self.total_udp_packets = 0
         self.total_can_frames = 0
+        self.udp_packet_times.clear()
+        self.can_frame_events.clear()
         self.stats_last_packet_label.setText("最近接收时间: -")
 
     def _stop_receiver(self) -> None:
@@ -557,6 +634,8 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.receiver.wait(1500)
         self.receiver = None
         self.receiving_active = False
+        self.udp_packet_times.clear()
+        self.can_frame_events.clear()
         self.connect_button.setText("连接")
 
     @QtCore.pyqtSlot()
@@ -598,8 +677,11 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
     @QtCore.pyqtSlot(dict)
     def on_packet_received(self, packet: dict) -> None:
         frames = packet.get("frames", [])
+        rx_now = time.monotonic()
         self.total_udp_packets += 1
         self.total_can_frames += len(frames)
+        self.udp_packet_times.append(rx_now)
+        self.can_frame_events.append((rx_now, len(frames)))
         self.stats_last_packet_label.setText(
             f"最近接收时间: {time.strftime('%H:%M:%S', time.localtime())}"
         )
@@ -608,7 +690,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
             message_key = frame.get("message_key")
             if not message_key or message_key not in self.bindings:
                 continue
-            self.last_rx[message_key] = time.monotonic()
+            self.last_rx[message_key] = rx_now
             self.latest_display[message_key] = {
                 "raw_hex": str(frame.get("data_hex", "-")),
                 "decoded": frame.get("decoded", {}),
@@ -637,7 +719,8 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
                 decoded = {}
             for bind in self.bindings.get(key, []):
                 bind.raw_item.setText(raw_hex)
-                bind.parsed_item.setText(format_decoded_text(decoded))
+                _update_parsed_grid(bind.parsed_widget, bind.parsed_layout, decoded, bind.row_color)
+                bind.table.setRowHeight(bind.row_index, bind.parsed_widget.minimumHeight() + 8)
                 table_needs_resize = True
 
         if table_needs_resize:
@@ -654,13 +737,15 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
             ok = (now - self.last_rx.get(source_key, 0.0)) <= 2.0
             set_led(led, ok)
 
+        cutoff = now - RATE_WINDOW_S
+        while self.udp_packet_times and self.udp_packet_times[0] < cutoff:
+            self.udp_packet_times.popleft()
+        while self.can_frame_events and self.can_frame_events[0][0] < cutoff:
+            self.can_frame_events.popleft()
+
+        udp_rate = len(self.udp_packet_times) / RATE_WINDOW_S
+        can_rate = sum(count for _, count in self.can_frame_events) / RATE_WINDOW_S
         elapsed = max(now - self.stats_start_time, 1e-6)
-        if self.receiving_active:
-            udp_rate = self.total_udp_packets / elapsed
-            can_rate = self.total_can_frames / elapsed
-        else:
-            udp_rate = 0.0
-            can_rate = 0.0
         self.stats_rate_udp_label.setText(f"UDP接收速率: {udp_rate:.1f} package/s")
         self.stats_rate_can_label.setText(f"CAN接收速率: {can_rate:.1f} frame/s")
         self.stats_total_can_label.setText(f"CAN报文总数: {self.total_can_frames}")
