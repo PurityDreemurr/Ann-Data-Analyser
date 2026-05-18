@@ -3,7 +3,7 @@ import socket
 import sys
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -85,6 +85,8 @@ class MessageRowBinding:
     parsed_layout: QtWidgets.QGridLayout
     led: QtWidgets.QLabel
     row_color: str
+    parsed_rows: List[Tuple[QtWidgets.QLabel, QtWidgets.QLabel]] = field(default_factory=list)
+    row_height: int = 0
 
 
 @dataclass
@@ -97,6 +99,10 @@ class CanLogEntry:
 
 
 def set_led(led: QtWidgets.QLabel, ok: bool) -> None:
+    prev_state = led.property("_led_state")
+    if prev_state is not None and bool(prev_state) == ok:
+        return
+    led.setProperty("_led_state", ok)
     size = min(led.width(), led.height())
     radius = max(size // 2 - 1, 1)
     color = VI_TEAL_BRIGHT if ok else VI_RED_BRIGHT
@@ -154,43 +160,49 @@ def format_decoded_text(decoded: Dict[str, object]) -> str:
     return "\n".join(lines)
 
 
-def _clear_layout(layout: QtWidgets.QLayout) -> None:
-    while layout.count():
-        item = layout.takeAt(0)
-        child_widget = item.widget()
-        child_layout = item.layout()
-        if child_widget is not None:
-            child_widget.deleteLater()
-        elif child_layout is not None:
-            _clear_layout(child_layout)
-
-
-def _update_parsed_grid(
-    parsed_widget: QtWidgets.QWidget,
-    parsed_layout: QtWidgets.QGridLayout,
-    decoded: Dict[str, object],
-    row_color: str,
-) -> None:
-    _clear_layout(parsed_layout)
-    parsed_widget.setStyleSheet(f"background-color: {row_color}; border: none;")
+def _update_parsed_grid(bind: MessageRowBinding, decoded: Dict[str, object]) -> bool:
+    parsed_widget = bind.parsed_widget
+    parsed_layout = bind.parsed_layout
 
     if not decoded:
-        key_label = QtWidgets.QLabel("-")
-        key_label.setStyleSheet(f"color: {VI_SILVER}; background-color: {row_color};")
-        parsed_layout.addWidget(key_label, 0, 0, 1, 2)
-        row_count = 1
+        rows = [("-", "")]
     else:
-        for idx, (key, value) in enumerate(decoded.items()):
-            key_label = QtWidgets.QLabel(str(key))
-            value_label = QtWidgets.QLabel(_format_value(value))
-            key_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-            value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            key_label.setStyleSheet(f"color: {VI_SOFT_WHITE}; background-color: {row_color};")
-            value_label.setStyleSheet(f"color: {VI_TEAL_BRIGHT}; background-color: {row_color};")
-            parsed_layout.addWidget(key_label, idx, 0)
-            parsed_layout.addWidget(value_label, idx, 1)
-        row_count = len(decoded)
+        rows = [(str(key), _format_value(value)) for key, value in decoded.items()]
 
+    while len(bind.parsed_rows) < len(rows):
+        row_idx = len(bind.parsed_rows)
+        key_label = QtWidgets.QLabel("")
+        value_label = QtWidgets.QLabel("")
+        key_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        value_label.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        key_label.setStyleSheet(f"color: {VI_SOFT_WHITE}; background-color: {bind.row_color};")
+        value_label.setStyleSheet(f"color: {VI_TEAL_BRIGHT}; background-color: {bind.row_color};")
+        parsed_layout.addWidget(key_label, row_idx, 0)
+        parsed_layout.addWidget(value_label, row_idx, 1)
+        bind.parsed_rows.append((key_label, value_label))
+
+    for idx, (key_label, value_label) in enumerate(bind.parsed_rows):
+        is_visible = idx < len(rows)
+        key_label.setVisible(is_visible)
+        value_label.setVisible(is_visible)
+        if not is_visible:
+            continue
+        row_key, row_value = rows[idx]
+        if key_label.text() != row_key:
+            key_label.setText(row_key)
+        if value_label.text() != row_value:
+            value_label.setText(row_value)
+
+    if bind.parsed_rows:
+        first_key_label, _ = bind.parsed_rows[0]
+        is_placeholder = len(rows) == 1 and rows[0][0] == "-"
+        prev_placeholder = first_key_label.property("_placeholder")
+        if prev_placeholder is None or bool(prev_placeholder) != is_placeholder:
+            first_key_label.setProperty("_placeholder", is_placeholder)
+            key_color = VI_SILVER if is_placeholder else VI_SOFT_WHITE
+            first_key_label.setStyleSheet(f"color: {key_color}; background-color: {bind.row_color};")
+
+    row_count = max(len(rows), 1)
     metrics_h = max(parsed_widget.fontMetrics().height(), 18)
     margins = parsed_layout.contentsMargins()
     spacing = parsed_layout.verticalSpacing()
@@ -201,7 +213,15 @@ def _update_parsed_grid(
         + max(row_count - 1, 0) * max(spacing, 0)
         + 4
     )
-    parsed_widget.setMinimumHeight(min_height)
+    if parsed_widget.minimumHeight() != min_height:
+        parsed_widget.setMinimumHeight(min_height)
+
+    row_height = min_height + 8
+    if bind.row_height != row_height:
+        bind.row_height = row_height
+        bind.table.setRowHeight(bind.row_index, row_height)
+        return True
+    return False
 
 
 class UdpReceiverThread(QtCore.QThread):
@@ -268,6 +288,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
         self.last_rx: Dict[str, float] = {}
         self.latest_display: Dict[str, Dict[str, object]] = {}
+        self.dirty_message_keys: set[str] = set()
         self.bindings: Dict[str, List[MessageRowBinding]] = {}
         self.safety_leds: Dict[str, QtWidgets.QLabel] = {}
         self.data_tables: List[QtWidgets.QTableWidget] = []
@@ -420,13 +441,13 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
                 parsed_widget = QtWidgets.QWidget()
                 parsed_widget.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+                parsed_widget.setStyleSheet(f"background-color: {row_color}; border: none;")
                 parsed_layout = QtWidgets.QGridLayout(parsed_widget)
                 parsed_layout.setContentsMargins(6, 4, 6, 4)
                 parsed_layout.setHorizontalSpacing(10)
                 parsed_layout.setVerticalSpacing(2)
                 parsed_layout.setColumnStretch(0, 1)
                 parsed_layout.setColumnStretch(1, 1)
-                _update_parsed_grid(parsed_widget, parsed_layout, {}, row_color)
 
                 led, led_holder = create_centered_led(28, row_color)
                 set_led(led, False)
@@ -437,17 +458,17 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
                 table.setCellWidget(row, 3, parsed_widget)
                 table.setCellWidget(row, 4, led_holder)
 
-                self.bindings.setdefault(message_key, []).append(
-                    MessageRowBinding(
-                        table=table,
-                        row_index=row,
-                        raw_item=raw_item,
-                        parsed_widget=parsed_widget,
-                        parsed_layout=parsed_layout,
-                        led=led,
-                        row_color=row_color,
-                    )
+                bind = MessageRowBinding(
+                    table=table,
+                    row_index=row,
+                    raw_item=raw_item,
+                    parsed_widget=parsed_widget,
+                    parsed_layout=parsed_layout,
+                    led=led,
+                    row_color=row_color,
                 )
+                self.bindings.setdefault(message_key, []).append(bind)
+                _update_parsed_grid(bind, {})
 
             page = QtWidgets.QWidget()
             page.setObjectName("tablePage")
@@ -821,6 +842,9 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.total_can_frames = 0
         self.udp_packet_times.clear()
         self.can_frame_events.clear()
+        self.last_rx.clear()
+        self.latest_display.clear()
+        self.dirty_message_keys.clear()
         self._delete_auto_saved_files()
         self.log_buffer_entries.clear()
         self.log_total_frames = 0
@@ -932,6 +956,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
                 "raw_hex": str(frame.get("data_hex", "-")),
                 "decoded": frame.get("decoded", {}),
             }
+            self.dirty_message_keys.add(message_key)
 
     @QtCore.pyqtSlot(str)
     def on_packet_error(self, error: str) -> None:
@@ -949,16 +974,21 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
 
     def refresh_ui(self) -> None:
         table_needs_resize = False
-        for key, payload in self.latest_display.items():
+        dirty_keys = list(self.dirty_message_keys)
+        self.dirty_message_keys.clear()
+        for key in dirty_keys:
+            payload = self.latest_display.get(key)
+            if payload is None:
+                continue
             raw_hex = str(payload.get("raw_hex", "-"))
             decoded = payload.get("decoded", {})
             if not isinstance(decoded, dict):
                 decoded = {}
             for bind in self.bindings.get(key, []):
                 bind.raw_item.setText(raw_hex)
-                _update_parsed_grid(bind.parsed_widget, bind.parsed_layout, decoded, bind.row_color)
-                bind.table.setRowHeight(bind.row_index, bind.parsed_widget.minimumHeight() + 8)
-                table_needs_resize = True
+                row_height_changed = _update_parsed_grid(bind, decoded)
+                if row_height_changed:
+                    table_needs_resize = True
 
         if table_needs_resize:
             for table in self.data_tables:
