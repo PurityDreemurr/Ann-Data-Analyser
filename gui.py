@@ -173,19 +173,22 @@ class UdpReceiverThread(QtCore.QThread):
 class CanUdpMonitorWindow(QtWidgets.QMainWindow):
     def __init__(self, ip: str, port: int):
         super().__init__()
+        self.ui_scale = 0.78 if sys.platform == "darwin" else 1.0
         self.setWindowTitle("Ann Data Analyser")
         icon_path = Path(__file__).resolve().parent / "icon" / "icon.png"
         if icon_path.exists():
             self.setWindowIcon(QtGui.QIcon(str(icon_path)))
-        self.setMinimumSize(960, 640)
+        self.setMinimumSize(self._sp(900), self._sp(620))
         screen = QtWidgets.QApplication.primaryScreen()
         if screen is not None:
             area = screen.availableGeometry()
-            width = min(area.width(), max(1100, int(area.width() * 0.88)))
-            height = min(area.height(), max(760, int(area.height() * 0.88)))
+            base_w = self._sp(1100)
+            base_h = self._sp(760)
+            width = min(area.width(), max(base_w, int(area.width() * 0.88)))
+            height = min(area.height(), max(base_h, int(area.height() * 0.88)))
             self.resize(width, height)
         else:
-            self.resize(1280, 800)
+            self.resize(self._sp(1280), self._sp(800))
 
         self.settings = QtCore.QSettings("AnnDataAnalyser", "CanUdpGui")
         self.receiver = None
@@ -220,6 +223,9 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.ui_timer.timeout.connect(self.refresh_ui)
         self.ui_timer.start()
 
+    def _sp(self, value: int) -> int:
+        return max(1, int(round(value * self.ui_scale)))
+
     def _build_top_controls(self) -> None:
         control_row = QtWidgets.QHBoxLayout()
         control_row.setSpacing(12)
@@ -238,7 +244,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         port_label.setObjectName("connectionLabel")
 
         for widget in (ip_label, self.ip_input, port_label, self.port_input, self.connect_button):
-            widget.setFixedHeight(56)
+            widget.setFixedHeight(self._sp(56))
 
         control_row.addWidget(ip_label)
         control_row.addWidget(self.ip_input, 1)
@@ -262,7 +268,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         # table frame instead of the whole tab widget.
         self.stats_panel_wrapper = QtWidgets.QWidget()
         self.stats_panel_wrapper.setObjectName("statsPanelWrapper")
-        self.stats_panel_wrapper.setFixedWidth(450)
+        self.stats_panel_wrapper.setFixedWidth(self._sp(450))
         stats_wrapper_layout = QtWidgets.QVBoxLayout(self.stats_panel_wrapper)
         stats_wrapper_layout.setContentsMargins(0, 8, 0, 64)
         stats_wrapper_layout.setSpacing(0)
@@ -396,7 +402,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         for idx, (display_name, message_key) in enumerate(SAFETY_LED_SOURCES):
             led, holder = create_centered_led(44, VI_PANEL_2)
             set_led(led, False)
-            holder.setFixedWidth(180)
+            holder.setFixedWidth(self._sp(180))
 
             item_layout = QtWidgets.QHBoxLayout()
             item_layout.setContentsMargins(0, 0, 0, 0)
@@ -424,7 +430,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         middle_placeholder.setStyleSheet(
             f"color: {VI_SILVER}; border: 2px dashed {VI_GRID}; border-radius: 14px; background: transparent;"
         )
-        middle_placeholder.setMinimumSize(300, 220)
+        middle_placeholder.setMinimumSize(self._sp(300), self._sp(220))
 
         row.addLayout(left_group, 1)
         row.addStretch(1)
@@ -442,7 +448,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
     def _build_stats_sidebar(self) -> QtWidgets.QFrame:
         panel = QtWidgets.QFrame()
         panel.setObjectName("statsPanel")
-        panel.setFixedWidth(450)
+        panel.setFixedWidth(self._sp(450))
         panel.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Expanding)
         layout = QtWidgets.QVBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 6)
@@ -479,7 +485,7 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         logo_path = Path(__file__).resolve().parent / "icon" / "logo.png"
         self.mascot_logo = QtWidgets.QLabel()
         self.mascot_logo.setObjectName("mascotLogo")
-        self.mascot_logo.setFixedSize(250, 250)
+        self.mascot_logo.setFixedSize(self._sp(250), self._sp(250))
         self.mascot_logo.setAlignment(QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom)
         if logo_path.exists():
             logo_pixmap = QtGui.QPixmap(str(logo_path))
@@ -501,8 +507,8 @@ class CanUdpMonitorWindow(QtWidgets.QMainWindow):
         self.mascot_title = QtWidgets.QLabel("Ann Data Analyser")
         self.mascot_title.setObjectName("mascotTitle")
         self.mascot_title.setAlignment(QtCore.Qt.AlignCenter)
-        self.mascot_title.setFixedWidth(430)
-        self.mascot_title.setFixedHeight(44)
+        self.mascot_title.setFixedWidth(self._sp(430))
+        self.mascot_title.setFixedHeight(self._sp(44))
         layout.addSpacing(0)
         layout.addWidget(self.mascot_title, 0, QtCore.Qt.AlignHCenter | QtCore.Qt.AlignBottom)
 
@@ -658,12 +664,12 @@ def main() -> None:
     app = QtWidgets.QApplication(sys.argv)
     english_font, chinese_font = resolve_ui_fonts()
     font_stack = f'"{english_font}", "{chinese_font}", "sans-serif"'
-    app.setFont(QtGui.QFont(english_font, 13, QtGui.QFont.Bold))
+    base_font_size = 11 if sys.platform == "darwin" else 13
+    app.setFont(QtGui.QFont(english_font, base_font_size, QtGui.QFont.Bold))
     icon_path = Path(__file__).resolve().parent / "icon" / "icon.png"
     if icon_path.exists():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
-    app.setStyleSheet(
-        f"""
+    base_stylesheet = f"""
         QMainWindow {{
             background-color: {VI_BLACK};
         }}
@@ -952,7 +958,27 @@ def main() -> None:
             border: 2px solid {VI_TEAL};
         }}
         """
-    )
+
+    mac_compact_stylesheet = ""
+    if sys.platform == "darwin":
+        mac_compact_stylesheet = """
+        QWidget { font-size: 16px; }
+        QLabel#connectionLabel { font-size: 16px; border-radius: 20px; min-width: 46px; }
+        QLabel#statsTitle { font-size: 18px; border-radius: 18px; padding: 8px 10px; }
+        QLabel#statsMetricTeal, QLabel#statsMetricOrange, QLabel#statsMetricGray, QLabel#statsMetricRed {
+            font-size: 16px; border-radius: 16px; padding: 8px 10px;
+        }
+        QLabel#mascotTitle { font-size: 24px; }
+        QLineEdit#connectionInput, QLineEdit { font-size: 16px; border-radius: 20px; padding: 0px 12px; }
+        QPushButton { font-size: 16px; border-radius: 20px; padding: 0px 14px; }
+        QTabBar::tab { font-size: 16px; border-radius: 18px; padding: 6px 14px; }
+        QTableWidget#dataTable { font-size: 16px; }
+        QTableWidget#dataTable::item { font-size: 16px; padding: 6px 8px; }
+        QHeaderView::section { font-size: 16px; padding: 6px; }
+        QStatusBar { font-size: 16px; }
+        """
+
+    app.setStyleSheet(base_stylesheet + mac_compact_stylesheet)
     window = CanUdpMonitorWindow(args.ip, args.port)
     window.show()
     sys.exit(app.exec_())
